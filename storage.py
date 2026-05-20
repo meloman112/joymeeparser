@@ -111,11 +111,24 @@ class ApartmentStore:
         await self._r.set(self._apt_key(apt_id), json.dumps(existing, ensure_ascii=False))
         return existing
 
-    async def get_category(self, filter_id: str, apt_id: int) -> Category:
+    async def get_apt_meta(self, filter_id: str, apt_id: int) -> dict[str, Any]:
         raw = await self._r.get(self._f_apt_meta(filter_id, apt_id))
-        if raw:
-            return Category(json.loads(raw).get("category", Category.UNVERIFIED.value))
+        return json.loads(raw) if raw else {}
+
+    async def get_category(self, filter_id: str, apt_id: int) -> Category:
+        meta = await self.get_apt_meta(filter_id, apt_id)
+        if meta.get("category"):
+            return Category(meta["category"])
         return Category.UNVERIFIED
+
+    async def is_viewed(self, filter_id: str, apt_id: int) -> bool:
+        return bool((await self.get_apt_meta(filter_id, apt_id)).get("viewed"))
+
+    async def _save_apt_meta(self, filter_id: str, apt_id: int, meta: dict[str, Any]) -> None:
+        await self._r.set(
+            self._f_apt_meta(filter_id, apt_id),
+            json.dumps(meta, ensure_ascii=False),
+        )
 
     async def set_category(self, filter_id: str, apt_id: int, category: Category) -> bool:
         if not await self._r.sismember(self._f_known(filter_id), apt_id):
@@ -124,10 +137,17 @@ class ApartmentStore:
         if old != category:
             await self._r.srem(self._f_idx_key(filter_id, old), apt_id)
         await self._r.sadd(self._f_idx_key(filter_id, category), apt_id)
-        await self._r.set(
-            self._f_apt_meta(filter_id, apt_id),
-            json.dumps({"category": category.value}, ensure_ascii=False),
-        )
+        meta = await self.get_apt_meta(filter_id, apt_id)
+        meta["category"] = category.value
+        await self._save_apt_meta(filter_id, apt_id, meta)
+        return True
+
+    async def set_viewed(self, filter_id: str, apt_id: int, viewed: bool) -> bool:
+        if not await self._r.sismember(self._f_known(filter_id), apt_id):
+            return False
+        meta = await self.get_apt_meta(filter_id, apt_id)
+        meta["viewed"] = viewed
+        await self._save_apt_meta(filter_id, apt_id, meta)
         return True
 
     async def register_new_for_filter(self, filter_id: str, ids: list[int]) -> list[int]:
@@ -141,10 +161,7 @@ class ApartmentStore:
         await self._r.sadd(self._f_known(filter_id), apt_id)
         cat = category or Category.UNVERIFIED
         await self._r.sadd(self._f_idx_key(filter_id, cat), apt_id)
-        await self._r.set(
-            self._f_apt_meta(filter_id, apt_id),
-            json.dumps({"category": cat.value}, ensure_ascii=False),
-        )
+        await self._save_apt_meta(filter_id, apt_id, {"category": cat.value, "viewed": False})
 
     async def get_last_active(self, filter_id: str) -> set[int]:
         raw = await self._r.smembers(self._f_last_active(filter_id))

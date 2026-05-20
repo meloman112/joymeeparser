@@ -4,7 +4,7 @@ from aiogram import F, Router
 from aiogram.filters import Command, CommandObject
 from aiogram.types import CallbackQuery, Message
 
-from apt_browser import show_apt_at_index, show_apt_by_ids
+from apt_browser import navigate_apt, show_apt_by_ids, show_apt_entry
 from formatters import category_keyboard_notify, filters_list_keyboard
 from list_browser import CATEGORIES, parse_list_args, send_list_page
 from joymi_api import JoymiClient
@@ -216,13 +216,22 @@ async def on_apt_open(cb: CallbackQuery, store: ApartmentStore, api: JoymiClient
     _, fk, cat_s, idx_s = cb.data.split(":", 3)
     browse_filter_id = None if fk == "all" else fk
     try:
-        await show_apt_at_index(
+        category = Category(cat_s)
+        index = int(idx_s)
+        entries, _ = await store.list_entries(browse_filter_id, category, index, 1)
+        if not entries:
+            await cb.answer("Пусто", show_alert=True)
+            return
+        entry_fid, apt_id = entries[0]
+        await show_apt_entry(
             cb,
             store,
             api,
             browse_filter_id=browse_filter_id,
-            browse_category=Category(cat_s),
-            index=int(idx_s),
+            browse_category=category,
+            entry_fid=entry_fid,
+            apt_id=apt_id,
+            hint_index=index,
         )
     except (ValueError, KeyError):
         await cb.answer("Ошибка")
@@ -230,38 +239,80 @@ async def on_apt_open(cb: CallbackQuery, store: ApartmentStore, api: JoymiClient
 
 @router.callback_query(F.data.startswith("anav:"))
 async def on_apt_nav(cb: CallbackQuery, store: ApartmentStore, api: JoymiClient):
-    _, fk, cat_s, idx_s = cb.data.split(":", 3)
+    parts = cb.data.split(":")
+    if len(parts) != 7:
+        await cb.answer("Устаревшая кнопка — открой заново")
+        return
+    _, fk, cat_s, entry_fid, apt_id_s, dir_s, hint_s = parts
     browse_filter_id = None if fk == "all" else fk
     try:
-        category = Category(cat_s)
-        index = int(idx_s)
+        direction = {"n": "next", "p": "prev"}[dir_s]
+        await navigate_apt(
+            cb,
+            store,
+            api,
+            browse_filter_id=browse_filter_id,
+            browse_category=Category(cat_s),
+            entry_fid=entry_fid,
+            apt_id=int(apt_id_s),
+            direction=direction,
+            hint_index=int(hint_s),
+        )
     except (ValueError, KeyError):
         await cb.answer("Ошибка")
+
+
+@router.callback_query(F.data.startswith("view:"))
+async def on_viewed(cb: CallbackQuery, store: ApartmentStore, api: JoymiClient):
+    parts = cb.data.split(":")
+    if len(parts) != 7:
+        await cb.answer("Устаревшая кнопка")
+        return
+    _, browse_fk, browse_cat, hint_s, entry_fid, apt_id_s, val_s = parts
+    browse_filter_id = None if browse_fk == "all" else browse_fk
+    apt_id = int(apt_id_s)
+    viewed = val_s == "1"
+
+    ok = await store.set_viewed(entry_fid, apt_id, viewed)
+    if not ok:
+        await cb.answer("Нет в фильтре", show_alert=True)
         return
 
-    await show_apt_at_index(
+    await cb.answer("Смотрел" if viewed else "Не смотрел")
+    await navigate_apt(
         cb,
         store,
         api,
         browse_filter_id=browse_filter_id,
-        browse_category=category,
-        index=index,
+        browse_category=Category(browse_cat),
+        entry_fid=entry_fid,
+        apt_id=apt_id,
+        direction="stay",
+        hint_index=int(hint_s),
     )
 
 
+@router.callback_query(F.data.startswith("viewn:"))
+async def on_viewed_notify(cb: CallbackQuery, store: ApartmentStore):
+    _, entry_fid, apt_id_s, val_s = cb.data.split(":", 3)
+    viewed = val_s == "1"
+    ok = await store.set_viewed(entry_fid, int(apt_id_s), viewed)
+    await cb.answer("Смотрел" if viewed and ok else ("Не смотрел" if ok else "Ошибка"))
+
+
 @router.callback_query(F.data.startswith("cat:"))
-async def on_category(cb: CallbackQuery, store: ApartmentStore):
+async def on_category(cb: CallbackQuery, store: ApartmentStore, api: JoymiClient):
     parts = cb.data.split(":")
     if len(parts) != 7:
         await cb.answer("Устаревшая кнопка — открой квартиру заново")
         return
 
-    _, browse_fk, browse_cat, idx_s, entry_fid, apt_id_s, cat_s = parts
+    _, browse_fk, browse_cat, hint_s, entry_fid, apt_id_s, cat_s = parts
     apt_id = int(apt_id_s)
     cat = Category(cat_s)
     browse_filter_id = None if browse_fk == "all" else browse_fk
     browse_category = Category(browse_cat)
-    index = int(idx_s)
+    hint_index = int(hint_s)
 
     ok = await store.set_category(entry_fid, apt_id, cat)
     if not ok:
@@ -269,22 +320,17 @@ async def on_category(cb: CallbackQuery, store: ApartmentStore):
         return
 
     await cb.answer(cat.label_ru)
-    if cb.message:
-        from apt_browser import list_all_entries
-        from formatters import apt_view_keyboard
-
-        entries = await list_all_entries(store, browse_filter_id, browse_category)
-        total = len(entries) or 1
-        await cb.message.edit_reply_markup(
-            reply_markup=apt_view_keyboard(
-                browse_filter_id,
-                browse_category,
-                min(index, total - 1),
-                total,
-                entry_fid,
-                apt_id,
-            )
-        )
+    await navigate_apt(
+        cb,
+        store,
+        api,
+        browse_filter_id=browse_filter_id,
+        browse_category=browse_category,
+        entry_fid=entry_fid,
+        apt_id=apt_id,
+        direction="stay",
+        hint_index=hint_index,
+    )
 
 
 @router.callback_query(F.data.startswith("catn:"))

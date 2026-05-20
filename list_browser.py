@@ -105,8 +105,11 @@ async def build_list_page(
     for i, (fid, apt_id) in enumerate(entries):
         apt = await store.get_apartment(apt_id)
         if apt:
+            viewed = await store.is_viewed(fid, apt_id)
             lines.append(
-                format_short_list_item(apt, fid, category, base_index + i, total)
+                format_short_list_item(
+                    apt, fid, category, base_index + i, total, viewed=viewed
+                )
             )
 
     markup = pagination_keyboard(
