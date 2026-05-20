@@ -56,7 +56,7 @@ def format_plain_card(
     header += " · ".join(status_parts) + "\n"
 
     lines = [
-        f"{price}<b>{title}</b>",
+        f"{price} <b> {title}</b>",
         f"💰 {price} y.e. · id <code>{apt_id}</code>",
         f"📍 {district}" + (f", {address}" if address else ""),
         f"🏠 {rooms} комн · {area} m² · этаж {floor}/{floors}",
